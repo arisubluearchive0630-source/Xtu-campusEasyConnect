@@ -1,8 +1,13 @@
 package com.example.android_logininternet.portal
 
 import android.annotation.SuppressLint
+import android.graphics.Color
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -11,11 +16,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import com.example.android_logininternet.util.EventLog
 
 /** JS 里的 window.XtuBridge，把注入脚本的进度回传给 Kotlin。 */
 private class PortalJsBridge(private val onEvent: (String, String) -> Unit) {
@@ -27,6 +32,10 @@ private class PortalJsBridge(private val onEvent: (String, String) -> Unit) {
 
 /**
  * 承载认证页的 WebView：页面加载完成后注入自动填充脚本，并把 URL 变化回报给上层。
+ *
+ * 注入时机：认证页是 Angular SPA，onPageFinished 时表单常常还没渲染，
+ * 所以同一次加载会在 0.4s / 1.5s / 4s / 8s 各注入一次，
+ * 真正的"等表单"由脚本内部的轮询负责，重复注入由 JS 侧标记挡住。
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -37,14 +46,16 @@ fun PortalWebView(
     attempt: Int,
     modifier: Modifier = Modifier,
     onUrlChanged: (String) -> Unit,
-    onBridgeEvent: (String, String) -> Unit
+    onBridgeEvent: (String, String) -> Unit,
+    onReady: () -> Unit = {}
 ) {
     val currentAccount by rememberUpdatedState(account)
     val currentPassword by rememberUpdatedState(password)
     val currentOnUrl by rememberUpdatedState(onUrlChanged)
     val currentOnBridge by rememberUpdatedState(onBridgeEvent)
+    val currentOnReady by rememberUpdatedState(onReady)
+    /** 已经注入过的 (url, 时延) 组合，避免同一页面反复注入。 */
     val injected = remember { mutableSetOf<String>() }
-    val lastUrl = remember { mutableStateOf("") }
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val webView = remember {
@@ -53,6 +64,7 @@ fun PortalWebView(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+            setBackgroundColor(Color.TRANSPARENT)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
@@ -67,59 +79,130 @@ fun PortalWebView(
                 "XtuBridge"
             )
 
+            webChromeClient = object : WebChromeClient() {
+                override fun onJsAlert(
+                    view: WebView?,
+                    url: String?,
+                    message: String?,
+                    result: android.webkit.JsResult?
+                ): Boolean {
+                    // 认证页出错时可能弹 alert，不处理会卡住页面
+                    EventLog.add("js", "alert: " + message)
+                    currentOnBridge("pageAlert", message ?: "")
+                    result?.confirm()
+                    return true
+                }
+
+                override fun onConsoleMessage(msg: ConsoleMessage?): Boolean {
+                    if (msg != null) {
+                        EventLog.add("js", msg.message() + " (line " + msg.lineNumber() + ")")
+                    }
+                    return true
+                }
+            }
+
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                    val url = request?.url?.toString()
-                    if (url != null) {
-                        lastUrl.value = url
-                        currentOnUrl(url)
+                    request?.url?.toString()?.let {
+                        EventLog.add("web", "shouldOverride " + it)
+                        currentOnUrl(it)
                     }
                     return false
                 }
 
                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                    if (url != null) {
-                        lastUrl.value = url
-                        currentOnUrl(url)
-                    }
-                }
-
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    if (url == null) return
-                    lastUrl.value = url
+                    if (url == null || view == null) return
+                    EventLog.add("web", "onPageStarted " + url)
                     currentOnUrl(url)
-                    if (!url.contains("zz.xtu.edu.cn")) return
-                    if (url.contains("/portal/entry/pc/finish")) return
+                    // 认证页常年有长连接，onPageFinished 可能迟迟不来（甚至永远不来），
+                    // 所以从 onPageStarted 起就按时间点硬注入，不等加载"完成"。
                     val acc = currentAccount
                     val pwd = currentPassword
                     if (acc.isBlank() || pwd.isBlank()) return
-                    val key = url + "|" + acc
-                    if (!injected.add(key)) return
-                    view?.postDelayed({
-                        view.evaluateJavascript(PortalAutofill.script(acc, pwd), null)
-                    }, 400L)
+                    if (url.contains("/portal/entry/pc/finish")) return
+                    val delays = longArrayOf(1500L, 3000L, 6000L, 10000L, 15000L)
+                    delays.forEachIndexed { index, d ->
+                        val key = "start|" + url + "#" + index
+                        if (!injected.add(key)) return@forEachIndexed
+                        view.postDelayed({
+                            if (view.url?.contains("/portal/entry/pc/finish") == true) return@postDelayed
+                            val token = 9000 + index
+                            EventLog.add("web", "注入脚本(按时间) token=" + token + " @" + d + "ms")
+                            view.evaluateJavascript(PortalAutofill.script(acc, pwd, token)) { result ->
+                                EventLog.add("js", "inject#" + token + " result=" + result)
+                            }
+                        }, d)
+                    }
+                }
+
+                override fun onPageCommitVisible(view: WebView?, url: String?) {
+                    EventLog.add("web", "onPageCommitVisible " + url)
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    if (url == null || view == null) return
+                    EventLog.add("web", "onPageFinished " + url)
+                    currentOnUrl(url)
+                    currentOnReady()
+
+                    if (url.contains("/portal/entry/pc/finish")) {
+                        EventLog.add("web", "已到 finish 页")
+                        return
+                    }
+                    val acc = currentAccount
+                    val pwd = currentPassword
+                    if (acc.isBlank() || pwd.isBlank()) {
+                        EventLog.add("web", "账密为空，跳过注入")
+                        return
+                    }
+                    // 不再限定域名：不同网关给出的页面地址不一样，
+                    // 由脚本自己判断页面上有没有登录表单。
+
+                    // Angular 渲染时机不确定，多打几个时间点
+                    val delays = longArrayOf(400L, 1500L, 4000L, 8000L)
+                    delays.forEachIndexed { index, d ->
+                        val key = url + "#" + index
+                        if (!injected.add(key)) return@forEachIndexed
+                        view.postDelayed({
+                            val token = attempt * 100 + index
+                            EventLog.add("web", "注入脚本 token=" + token + " @" + d + "ms")
+                            view.evaluateJavascript(PortalAutofill.script(acc, pwd, token)) { result ->
+                                EventLog.add("js", "inject#" + token + " result=" + result)
+                            }
+                        }, d)
+                    }
+                }
+
+                override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+                    if (request?.isForMainFrame != true) return
+                    val desc = (error?.description?.toString() ?: "") + " code=" + (error?.errorCode?.toString() ?: "?")
+                    EventLog.add("web", "主文档加载失败 " + request.url + " " + desc)
+                    currentOnBridge("pageError", desc + " " + request.url)
+                }
+
+                override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                    EventLog.add("web", "渲染进程崩溃 didCrash=" + (detail?.didCrash() == true))
+                    currentOnBridge("renderGone", "渲染进程崩溃")
+                    return true
                 }
             }
         }
     }
 
-    LaunchedEffect(attempt) {
-        injected.clear()
-    }
+    LaunchedEffect(attempt) { injected.clear() }
 
     LaunchedEffect(portalUrl) {
-        if (portalUrl.isNotBlank() && portalUrl != lastUrl.value) {
+        if (portalUrl.isNotBlank()) {
+            EventLog.add("web", "loadUrl " + portalUrl)
             webView.loadUrl(portalUrl)
         }
     }
 
-    AndroidView(
-        factory = { webView },
-        modifier = modifier
-    )
+    AndroidView(factory = { webView }, modifier = modifier)
 
     DisposableEffect(Unit) {
         onDispose {
+            EventLog.add("web", "dispose WebView")
             webView.stopLoading()
             webView.destroy()
         }
