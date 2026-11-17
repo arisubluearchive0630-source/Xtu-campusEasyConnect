@@ -1,6 +1,7 @@
 name: Release
 
-# 仅 main 分支被合并/推送时构建；产物是一个已签名的 release APK，发布为 GitHub Release。
+# 仅 main 分支被合并/推送时构建；产物是一个已签名的 release APK，发布为 **nightly 预发布**（prerelease，
+# 不抢占 Latest 标记）。只有真正定版时才手动把某个 nightly 改成正式 Release。
 # 签名密钥 ci/xtu-ci-release.jks 是**CI 专用**密钥（公开在仓库里，仅用于让 APK 可安装、
 # 且跨版本签名稳定以便覆盖安装）。它不用于 Google Play 或任何正式分发。
 
@@ -59,7 +60,7 @@ jobs:
       - name: Compute release tag
         id: meta
         run: |
-          TAG="v$(TZ=Asia/Shanghai date +%Y.%m.%d-%H%M%S)"
+          TAG="nightly-$(TZ=Asia/Shanghai date +%Y.%m.%d-%H%M%S)"
           STAMP="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "stamp=$STAMP" >> "$GITHUB_OUTPUT"
@@ -106,6 +107,8 @@ jobs:
             echo "no previous tag, listing all commits"
           fi
           {
+            echo "> 这是 main 分支自动构建的 nightly 预发布版本，随每次合并更新，稳定性低于正式版。"
+            echo ""
             echo "## 构建信息"
             echo ""
             echo "| 项目 | 值 |"
@@ -136,9 +139,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
-          name: ${{ steps.meta.outputs.tag }}
+          name: Nightly ${{ steps.meta.outputs.tag }}
           body_path: release_notes.md
           files: ${{ steps.sign.outputs.apk }}
           draft: false
-          prerelease: false
-          make_latest: true
+          prerelease: true
+          make_latest: false
