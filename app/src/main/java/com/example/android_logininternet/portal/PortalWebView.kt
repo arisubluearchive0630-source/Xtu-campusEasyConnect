@@ -54,8 +54,11 @@ fun PortalWebView(
     val currentOnUrl by rememberUpdatedState(onUrlChanged)
     val currentOnBridge by rememberUpdatedState(onBridgeEvent)
     val currentOnReady by rememberUpdatedState(onReady)
-    /** 已经注入过的 (url, 时延) 组合，避免同一页面反复注入。 */
+    /** 已经注入过的 (导航序号, 时延) 组合，避免同一页面反复注入。 */
     val injected = remember { mutableSetOf<String>() }
+
+    /** 每次导航自增：同一个 URL 刷新后也要重新注入，否则脚本只会在第一次加载时生效。 */
+    val navSeq = remember { java.util.concurrent.atomic.AtomicInteger(0) }
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val webView = remember {
@@ -114,6 +117,15 @@ fun PortalWebView(
                     if (url == null || view == null) return
                     EventLog.add("web", "onPageStarted " + url)
                     currentOnUrl(url)
+                    // 新导航：断网文案检查无条件注入，同 URL 刷新也算新导航
+                    val seq = navSeq.incrementAndGet()
+                    if (injected.add("off#" + seq)) {
+                        view.postDelayed({
+                            view.evaluateJavascript(PortalAutofill.offHoursScript()) { result ->
+                                EventLog.add("js", "offHours#" + seq + " result=" + result)
+                            }
+                        }, 800L)
+                    }
                     // 认证页常年有长连接，onPageFinished 可能迟迟不来（甚至永远不来），
                     // 所以从 onPageStarted 起就按时间点硬注入，不等加载"完成"。
                     val acc = currentAccount
@@ -122,7 +134,7 @@ fun PortalWebView(
                     if (url.contains("/portal/entry/pc/finish")) return
                     val delays = longArrayOf(1500L, 3000L, 6000L, 10000L, 15000L)
                     delays.forEachIndexed { index, d ->
-                        val key = "start|" + url + "#" + index
+                        val key = "start|" + seq + "#" + index
                         if (!injected.add(key)) return@forEachIndexed
                         view.postDelayed({
                             if (view.url?.contains("/portal/entry/pc/finish") == true) return@postDelayed
@@ -145,6 +157,14 @@ fun PortalWebView(
                     currentOnUrl(url)
                     currentOnReady()
 
+                    val seq = navSeq.get()
+                    // 再检查一次断网文案：这次是"加载完成"的时机，DOM 更完整
+                    if (injected.add("offF#" + seq)) {
+                        view.evaluateJavascript(PortalAutofill.offHoursScript()) { result ->
+                            EventLog.add("js", "offHoursF#" + seq + " result=" + result)
+                        }
+                    }
+
                     if (url.contains("/portal/entry/pc/finish")) {
                         EventLog.add("web", "已到 finish 页")
                         return
@@ -161,7 +181,7 @@ fun PortalWebView(
                     // Angular 渲染时机不确定，多打几个时间点
                     val delays = longArrayOf(400L, 1500L, 4000L, 8000L)
                     delays.forEachIndexed { index, d ->
-                        val key = url + "#" + index
+                        val key = "fin|" + seq + "#" + index
                         if (!injected.add(key)) return@forEachIndexed
                         view.postDelayed({
                             val token = attempt * 100 + index
