@@ -72,7 +72,7 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 刷新 Wi-Fi 状态（SSID、是否连着、定位权限）。 */
     fun refreshNetwork() {
-        val st = WifiSsidReader.state(getApplication())
+        val st = runCatching { WifiSsidReader.state(getApplication()) }.getOrNull() ?: return
         _state.update {
             it.copy(
                 ssid = st.ssid,

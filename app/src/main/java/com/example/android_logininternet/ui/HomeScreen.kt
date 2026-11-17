@@ -21,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import androidx.lifecycle.Lifecycle
@@ -39,12 +41,20 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.android_logininternet.portal.PortalWebView
 import com.example.android_logininternet.ui.settings.SettingsDialog
 import com.example.android_logininternet.vm.LoginViewModel
+import com.example.android_logininternet.wifi.WifiSsidReader
 
 @Composable
 fun HomeScreen(vm: LoginViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     var showSettings by remember { mutableStateOf(false) }
+    var showDiag by remember { mutableStateOf(false) }
+    var diagText by remember { mutableStateOf("") }
     val context = LocalContext.current
+    val versionName = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull() ?: "?"
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -126,6 +136,23 @@ fun HomeScreen(vm: LoginViewModel = viewModel()) {
             Spacer(Modifier.height(12.dp))
             Text(text = state.message.ifBlank { "未运行" }, style = MaterialTheme.typography.bodyLarge)
             Text(text = "运行时长：" + state.elapsedSeconds + " 秒", style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    diagText = WifiSsidReader.diagnostics(context)
+                    showDiag = !showDiag
+                }) { Text(if (showDiag) "收起诊断" else "诊断信息") }
+                Text(
+                    text = "v" + versionName,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (showDiag) {
+                Text(
+                    text = diagText,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             Spacer(Modifier.height(12.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
