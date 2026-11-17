@@ -1,0 +1,50 @@
+# ===== 构建产物 =====
+.gradle/
+build/
+/captures/
+output.json
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Gradle / Kotlin 缓存
+.kotlin/
+gradle-app.setting
+.gradletasknamecache
+
+# ===== 本机配置（每台机器不同，不能提交） =====
+local.properties
+gradle.properties.local
+
+# ===== 签名文件（绝对不能提交） =====
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+
+# ===== IDE =====
+.idea/
+*.iml
+*.hprof
+.cxx/
+.externalNativeBuild/
+build-logic/.gradle/
+
+# ===== 系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 日志与临时文件 =====
+*.log
+*.tmp
+*.swp
+*~
+
+# ===== 本地参考资料（含学号等个人信息 + 7MB 抓包 HTML，不入库） =====
+/html3web/
+/screen1.png
+/screen3.png
+/XtuAutoLogin-*.apk
