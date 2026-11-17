@@ -38,14 +38,20 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # ubuntu-latest 自带 Android SDK（ANDROID_HOME 已设置），直接用其中的 sdkmanager。
+      # 不用 android-actions/setup-android：它会执行 `sdkmanager tools`，该包已从远端仓库移除，导致 404 失败。
       - name: Install SDK platform and build-tools
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0" > /dev/null || \
-            sdkmanager --install "platforms;android-37" "build-tools;36.0.0" > /dev/null
+          SDKMGR="$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+          echo "sdkmanager: $SDKMGR"
+          yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
+          if "$SDKMGR" --install "platforms;android-37.0" "build-tools;36.0.0" > /dev/null; then
+            echo "installed platforms;android-37.0"
+          elif "$SDKMGR" --install "platforms;android-37" "build-tools;36.0.0" > /dev/null; then
+            echo "installed platforms;android-37"
+          else
+            echo "::warning::sdkmanager 安装平台失败，交给 Gradle 自动下载（AGP 会在构建时安装缺失的 SDK 包）"
+          fi
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
