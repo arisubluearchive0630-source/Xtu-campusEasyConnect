@@ -1,0 +1,138 @@
+name: Release
+
+# 仅 main 分支被合并/推送时构建；产物是一个已签名的 release APK，发布为 GitHub Release。
+# 签名密钥 ci/xtu-ci-release.jks 是**CI 专用**密钥（公开在仓库里，仅用于让 APK 可安装、
+# 且跨版本签名稳定以便覆盖安装）。它不用于 Google Play 或任何正式分发。
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+env:
+  KS_FILE: ci/xtu-ci-release.jks
+  KS_ALIAS: xtu
+  KS_PASS: xtuCiRelease2026
+
+jobs:
+  release:
+    name: Build & publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK platform and build-tools
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install "platforms;android-37.0" "build-tools;36.0.0" > /dev/null || \
+            sdkmanager --install "platforms;android-37" "build-tools;36.0.0" > /dev/null
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compute release tag
+        id: meta
+        run: |
+          TAG="v$(TZ=Asia/Shanghai date +%Y.%m.%d-%H%M%S)"
+          STAMP="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "stamp=$STAMP" >> "$GITHUB_OUTPUT"
+          echo "release tag: $TAG ($STAMP Asia/Shanghai)"
+
+      - name: Build release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease -x lintVitalRelease --no-configuration-cache --console=plain
+
+      - name: Sign APK
+        id: sign
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)"
+          UNSIGNED="$(find app/build/outputs/apk/release -maxdepth 1 -name '*-unsigned.apk' | head -n 1)"
+          if [ -z "$UNSIGNED" ]; then
+            echo "::error::未找到未签名的 release APK"
+            ls -R app/build/outputs/apk || true
+            exit 1
+          fi
+          APK_NAME="XtuAutoLogin-${{ steps.meta.outputs.tag }}.apk"
+          "${BUILD_TOOLS}zipalign" -p -f 4 "$UNSIGNED" aligned.apk
+          "${BUILD_TOOLS}apksigner" sign \
+            --ks "$KS_FILE" \
+            --ks-key-alias "$KS_ALIAS" \
+            --ks-pass "pass:$KS_PASS" \
+            --key-pass "pass:$KS_PASS" \
+            --out "$APK_NAME" \
+            aligned.apk
+          "${BUILD_TOOLS}apksigner" verify --print-certs "$APK_NAME"
+          echo "apk=$APK_NAME" >> "$GITHUB_OUTPUT"
+          ls -lh "$APK_NAME"
+
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          PREV="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -n "$PREV" ]; then
+            RANGE="${PREV}..HEAD"
+            echo "changes since $PREV"
+          else
+            RANGE="HEAD"
+            echo "no previous tag, listing all commits"
+          fi
+          {
+            echo "## 构建信息"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 版本 | ${{ steps.meta.outputs.tag }} |"
+            echo "| 构建时间 | ${{ steps.meta.outputs.stamp }} (Asia/Shanghai) |"
+            echo "| 提交 | ${GITHUB_SHA:0:7} |"
+            echo "| 分支 | ${GITHUB_REF_NAME} |"
+            echo ""
+            echo "## 近期更改"
+            echo ""
+            git log "$RANGE" --no-merges --max-count=30 --pretty=format:'- %s（%h，%an）'
+            echo ""
+            echo ""
+            echo "下载本页附件 XtuAutoLogin-${{ steps.meta.outputs.tag }}.apk 安装即可。"
+            echo "注意：release 包签名和之前的 debug 包不同，覆盖安装失败时请先卸载旧版（已保存的账号会被清掉）。"
+          } > release_notes.md
+          cat release_notes.md
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XtuAutoLogin-${{ steps.meta.outputs.tag }}
+          path: ${{ steps.sign.outputs.apk }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.tag }}
+          body_path: release_notes.md
+          files: ${{ steps.sign.outputs.apk }}
+          draft: false
+          prerelease: false
+          make_latest: true

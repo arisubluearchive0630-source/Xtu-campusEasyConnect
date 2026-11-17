@@ -18,11 +18,14 @@ gradle-app.setting
 local.properties
 gradle.properties.local
 
-# ===== 签名文件（绝对不能提交） =====
+# ===== 签名文件（正式签名绝对不能提交） =====
 *.jks
 *.keystore
 keystore.properties
 signing.properties
+# 例外：CI 专用签名密钥，公开在仓库里，只为了让 Actions 产出的 APK 可安装且签名稳定。
+# 不是正式分发签名，别拿它上 Google Play。见 .github/workflows/release.yml。
+!ci/xtu-ci-release.jks
 
 # ===== IDE =====
 .idea/
