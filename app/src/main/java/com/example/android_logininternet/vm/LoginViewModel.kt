@@ -87,8 +87,32 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile
     private var aborted = false
 
+    /** 启动时自动连接只触发一次，旋转屏幕重建 ViewModel 不会重复连。 */
+    private var autoStartUsed = false
+
     init {
         refreshNetwork()
+    }
+
+    /**
+     * 设置里打开了"启动时自动连接"就在进界面时自动跑一轮。
+     *
+     * 由界面在权限申请结束后调用：太早调用会因为拿不到 SSID 而显得"没生效"。
+     */
+    fun autoStartIfNeeded() {
+        if (autoStartUsed) return
+        autoStartUsed = true
+        if (!settings.autoConnectOnLaunch) {
+            EventLog.add("vm", "启动时自动连接：未开启")
+            return
+        }
+        if (settings.account.isBlank() || settings.password.isBlank()) {
+            EventLog.add("vm", "启动时自动连接：已开启但没有账密，跳过")
+            _state.update { it.copy(message = "启动时自动连接已开启，请先填写学号和密码") }
+            return
+        }
+        EventLog.add("vm", "启动时自动连接：自动开始")
+        start()
     }
 
     /** 刷新 Wi-Fi 状态（SSID、是否连着、定位权限）。 */

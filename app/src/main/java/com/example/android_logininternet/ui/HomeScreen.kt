@@ -71,7 +71,11 @@ fun HomeScreen(vm: LoginViewModel = viewModel()) {
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { vm.refreshNetwork() }
+    ) {
+        vm.refreshNetwork()
+        // 权限给完再自动连：SSID 需要定位权限才读得到
+        vm.autoStartIfNeeded()
+    }
 
     LaunchedEffect(Unit) {
         val needed = buildList {
@@ -83,8 +87,12 @@ fun HomeScreen(vm: LoginViewModel = viewModel()) {
             androidx.core.content.ContextCompat.checkSelfPermission(context, it) !=
                 android.content.pm.PackageManager.PERMISSION_GRANTED
         }
-        if (needed.isNotEmpty()) permissionLauncher.launch(needed.toTypedArray())
-        vm.refreshNetwork()
+        if (needed.isNotEmpty()) {
+            permissionLauncher.launch(needed.toTypedArray())
+        } else {
+            vm.refreshNetwork()
+            vm.autoStartIfNeeded()
+        }
     }
 
     // 每次重试都重新等页面加载
