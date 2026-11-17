@@ -37,8 +37,57 @@ object ConnectivityProbe {
         data class OffHours(val detail: String) : Result
     }
 
-    /** @param network 指定走哪个网络（一般传 Wi-Fi 网络），null 用系统默认。 */
+    private const val UA = "Mozilla/5.0 (Linux; Android 13)"
+
+    /**
+     * 探测一次，然后在必要时把页面正文再抓一遍，确认是不是"不在认证时段内"的提示页。
+     *
+     * @param network 指定走哪个网络（一般传 Wi-Fi 网络），null 用系统默认。
+     */
     fun probe(network: Network? = null): Result {
+        val r = probeOnce(network)
+        if (r is Result.OffHours) return r
+        // 跳转目标 / 探测失败页都可能写着"不在认证时段内"，
+        // 单看状态码判断不出来，所以再读一次正文。
+        val target = when (r) {
+            is Result.Portal -> r.url
+            is Result.Unreachable -> PROBE_URL
+            else -> null
+        } ?: return r
+        val body = bodyOf(target, network)
+        return if (body.contains(OFF_HOURS_MARK)) {
+            Log.i(TAG, "off hours page: " + target)
+            Result.OffHours(snippet(body))
+        } else {
+            r
+        }
+    }
+
+    /** 只抓页面正文，忽略状态码；任何异常都当空串。 */
+    private fun bodyOf(url: String, network: Network?): String {
+        return try {
+            val u = URL(url)
+            @Suppress("DEPRECATION")
+            val c = (if (network != null) network.openConnection(u) else u.openConnection()) as HttpURLConnection
+            try {
+                c.connectTimeout = 3000
+                c.readTimeout = 3000
+                c.instanceFollowRedirects = false
+                c.setRequestProperty("User-Agent", UA)
+                c.responseCode
+                (c.errorStream ?: c.inputStream)?.bufferedReader()?.use { it.readText() } ?: ""
+            } finally {
+                c.disconnect()
+            }
+        } catch (t: Throwable) {
+            ""
+        }
+    }
+
+    private fun snippet(body: String): String =
+        body.replace(Regex("\\s+"), " ").trim().take(120)
+
+    private fun probeOnce(network: Network? = null): Result {
         val conn = try {
             val url = URL(PROBE_URL)
             @Suppress("DEPRECATION")
@@ -52,7 +101,7 @@ object ConnectivityProbe {
             instanceFollowRedirects = false
             requestMethod = "GET"
             useCaches = false
-            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13)")
+            setRequestProperty("User-Agent", UA)
         }
 
         return try {
@@ -67,9 +116,8 @@ object ConnectivityProbe {
                 when {
                     // 断网时段：网关/门户直接在响应里写"不在认证时段内"
                     body.contains(OFF_HOURS_MARK) -> {
-                        val snippet = body.replace(Regex("\\s+"), " ").trim().take(120)
-                        Log.i(TAG, "off hours: " + snippet)
-                        Result.OffHours(snippet)
+                        Log.i(TAG, "off hours: " + snippet(body))
+                        Result.OffHours(snippet(body))
                     }
                     code in 300..399 -> {
                         val location = conn.getHeaderField("Location")

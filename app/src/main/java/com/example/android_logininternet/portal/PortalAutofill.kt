@@ -55,14 +55,9 @@ object PortalAutofill {
   if (window.__xtuRunning) { report("inject", "skip#" + TOKEN + " running"); return; }
   window.__xtuRunning = true;
 
-  // 凌晨断网：页面上写着"不在认证时段内"就没必要再找表单了
+  // 凌晨断网：页面上写着"不在认证时段内"就不必再找表单。
+  // 这句话可能是 Angular 后渲染出来的，也可能在 iframe 里，所以每轮轮询都查一次。
   var OFF_HOURS_MARK = "不在认证时段内";
-  var pageText = (document.body && document.body.innerText) || "";
-  if (pageText.indexOf(OFF_HOURS_MARK) >= 0) {
-    report("offHours", pageText.replace(/\s+/g, " ").slice(0, 120));
-    window.__xtuDone = true;
-    return;
-  }
 
   var frames = document.querySelectorAll("iframe");
   var reachable = 0;
@@ -88,6 +83,22 @@ object PortalAutofill {
     for (var i = 0; i < ds.length; i++) {
       var el = ds[i].querySelector(sel);
       if (el) return el;
+    }
+    return null;
+  }
+
+  /**
+   * 在所有能访问的 document 里找"不在认证时段内"。
+   * 命中返回一行上下文（写日志用），否则 null。
+   */
+  function findOffHours() {
+    var ds = docs();
+    for (var i = 0; i < ds.length; i++) {
+      var d = ds[i];
+      var text = ((d.body && d.body.innerText) || d.documentElement && d.documentElement.innerText) || "";
+      if (text.indexOf(OFF_HOURS_MARK) >= 0) {
+        return text.replace(/\s+/g, " ").trim().slice(0, 120);
+      }
     }
     return null;
   }
@@ -197,6 +208,14 @@ object PortalAutofill {
 
   var waited = 0;
   function tick() {
+    // 每轮先看页面有没有变成"不在认证时段内"
+    var off = findOffHours();
+    if (off) {
+      window.__xtuDone = true;
+      window.__xtuRunning = false;
+      report("offHours", off);
+      return;
+    }
     var user = findInDocs("input#nameInput") || findInDocs("input[name=username]");
     var pass = findInDocs("input[type=password]");
     if (!user || !pass) {
