@@ -135,7 +135,6 @@ fun PortalWebView(
                     val acc = currentAccount
                     val pwd = currentPassword
                     if (acc.isBlank() || pwd.isBlank()) return
-                    if (url.contains("/portal/entry/pc/finish")) return
                     val delays = longArrayOf(1500L, 3000L, 6000L, 10000L, 15000L)
                     delays.forEachIndexed { index, d ->
                         val key = "start|" + seq + "#" + index
@@ -172,10 +171,6 @@ fun PortalWebView(
                     // 成功文案可能晚于 onPageFinished 出现，这里先打一枪，之后由定时循环兜住
                     view.evaluateJavascript(PortalAutofill.successScript(), null)
 
-                    if (url.contains("/portal/entry/pc/finish")) {
-                        EventLog.add("web", "已到 finish 页")
-                        return
-                    }
                     val acc = currentAccount
                     val pwd = currentPassword
                     if (acc.isBlank() || pwd.isBlank()) {
@@ -223,11 +218,10 @@ fun PortalWebView(
             EventLog.add("web", "loadUrl " + portalUrl)
             webView.loadUrl(portalUrl)
             // 认证页有时原地刷新、有时慢半拍才渲染出"您已成功连接网络"，
-            // 所以整轮流程里每 2 秒补一次成功检查（脚本内部有去重标记，重复注入是空操作）。
-            var waited = 0L
-            while (waited < 180_000L) {
+            // 所以页面开着就一直每 2 秒补一次成功检查
+            //（脚本内部有去重标记，重复注入是空操作）。
+            while (true) {
                 delay(2_000L)
-                waited += 2_000L
                 webView.evaluateJavascript(PortalAutofill.successScript(), null)
             }
         }

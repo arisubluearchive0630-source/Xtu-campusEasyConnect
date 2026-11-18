@@ -21,6 +21,15 @@ object ConnectivityProbe {
     const val PORTAL_ENTRY = "https://zz.xtu.edu.cn/portal/entry/pc/authenticate"
 
     /**
+     * 认证状态页。
+     *
+     * 已认证时直接访问这个地址，页面会显示"您已成功连接网络！"；
+     * 未认证时门户自己会转去认证页（并带上 flowSessionId），所以它可以当通用入口用，
+     * 不需要再靠网关劫持来做跳转。
+     */
+    const val FINISH_URL = "https://zz.xtu.edu.cn/portal/entry/pc/finish;flowParams=undefined;from="
+
+    /**
      * 夜间断网时网关/门户会返回这句话，用它判断"不在认证时段"。
      * 不按系统时间猜：断网时间学校会调整，页面上写了什么才是准的。
      */
