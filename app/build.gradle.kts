@@ -14,8 +14,8 @@ android {
         applicationId = "com.example.android_logininternet"
         minSdk = 28
         targetSdk = 36
-        versionCode = 18
-        versionName = "0.18"
+        versionCode = 19
+        versionName = "0.19"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
