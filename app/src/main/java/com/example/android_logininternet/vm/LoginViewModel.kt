@@ -33,6 +33,8 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
         /** 断网时段由页面自己说明（"不在认证时段内"），程序不按系统时间猜。 */
         const val OUT_OF_HOURS_TEXT = "不在认证时段内，凌晨断网你不知道的吗笨蛋！"
 
+        /** 认证通过后锐捷网关会把流量重定向到这里，可作为成功判据。 */
+        const val REDIRECT_SUCCESS_HOST = "123.123.123.123"
     }
 
     enum class Phase { Idle, ConnectingWifi, Probing, LoadingPortal, Filling, Verifying, Online, Failed }
@@ -201,9 +203,19 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(portalUrl = null, pageUrl = "") }
     }
 
-    /** WebView 的 URL 变化（只用来显示：finish 页本身就是我们的入口，不能当判据）。 */
+    /**
+     * WebView 的 URL 变化。
+     *
+     * 除了显示，还兼一个成功判据：认证完成后，锐捷网关会把流量重定向到
+     * http://123.123.123.123/ ，所以只要 WebView 跳到了这个地址，就认为已经通了。
+     * （finish 页不能当判据 —— 它本身就是我们的入口。）
+     */
     fun onPageUrl(url: String) {
         _state.update { it.copy(pageUrl = url) }
+        if (url.contains(REDIRECT_SUCCESS_HOST) && !successSeen) {
+            EventLog.add("vm", "页面跳转到 " + REDIRECT_SUCCESS_HOST + "，判定已连网")
+            markOnline("认证成功（已跳转到 " + REDIRECT_SUCCESS_HOST + "）")
+        }
     }
 
     /** 注入脚本的回传。 */

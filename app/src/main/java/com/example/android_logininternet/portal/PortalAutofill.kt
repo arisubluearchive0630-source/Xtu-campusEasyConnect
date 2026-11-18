@@ -97,6 +97,7 @@ object PortalAutofill {
     private const val SUCCESS_SCRIPT = """
 (function () {
   var MARK = "您已成功连接网络";
+  var REDIR = "123.123.123.123";
   if (window.__xtuSuccFound) return;
 
   function docs() {
@@ -111,6 +112,14 @@ object PortalAutofill {
   }
 
   function check() {
+    // 认证通过后锐捷网关会重定向到 123.123.123.123，这本身就说明通了
+    try {
+      if (String(location.href).indexOf(REDIR) >= 0) {
+        window.__xtuSuccFound = true;
+        if (window.XtuBridge) { window.XtuBridge.report("success", "重定向到 " + REDIR); }
+        return true;
+      }
+    } catch (e) {}
     var ds = docs();
     for (var i = 0; i < ds.length; i++) {
       var t = ((ds[i].body && ds[i].body.innerText) || "").replace(/\s+/g, " ").trim();
