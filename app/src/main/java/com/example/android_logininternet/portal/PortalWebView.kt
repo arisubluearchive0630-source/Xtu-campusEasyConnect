@@ -31,6 +31,20 @@ private class PortalJsBridge(private val onEvent: (String, String) -> Unit) {
     }
 }
 
+/** 往当前页面注入全部脚本（填表 / 断网提示 / 成功检测）。同源 iframe 由填表脚本自己遍历。 */
+private fun injectAll(view: WebView, account: String, password: String, token: Int, tag: String) {
+    EventLog.add("web", "注入全部脚本 " + tag + " token=" + token)
+    if (account.isNotBlank() && password.isNotBlank()) {
+        view.evaluateJavascript(PortalAutofill.script(account, password, token)) { result ->
+            EventLog.add("js", "inject#" + token + " result=" + result)
+        }
+    } else {
+        EventLog.add("web", "账密为空，只注入检测脚本")
+    }
+    view.evaluateJavascript(PortalAutofill.successScript(), null)
+    view.evaluateJavascript(PortalAutofill.offHoursScript(), null)
+}
+
 /**
  * 承载认证页的 WebView：页面加载完成后注入自动填充脚本，并把 URL 变化回报给上层。
  *
@@ -55,9 +69,6 @@ fun PortalWebView(
     val currentOnUrl by rememberUpdatedState(onUrlChanged)
     val currentOnBridge by rememberUpdatedState(onBridgeEvent)
     val currentOnReady by rememberUpdatedState(onReady)
-    /** 已经注入过的 (导航序号, 时延) 组合，避免同一页面反复注入。 */
-    val injected = remember { mutableSetOf<String>() }
-
     /** 每次导航自增：同一个 URL 刷新后也要重新注入，否则脚本只会在第一次加载时生效。 */
     val navSeq = remember { java.util.concurrent.atomic.AtomicInteger(0) }
 
@@ -118,33 +129,21 @@ fun PortalWebView(
                     if (url == null || view == null) return
                     EventLog.add("web", "onPageStarted " + url)
                     currentOnUrl(url)
-                    // 新导航：断网文案 / 成功文案检查无条件注入，同 URL 刷新也算新导航
+                    // 每一次导航（不管什么页面）都立即注入全部脚本，
+                    // 再按几个时间点补注入：Angular 渲染时机不确定，
+                    // 认证页也常年挂着长连接，onPageFinished 可能永远不来。
                     val seq = navSeq.incrementAndGet()
-                    view.postDelayed({
-                        view.evaluateJavascript(PortalAutofill.successScript(), null)
-                    }, 700L)
-                    if (injected.add("off#" + seq)) {
-                        view.postDelayed({
-                            view.evaluateJavascript(PortalAutofill.offHoursScript()) { result ->
-                                EventLog.add("js", "offHours#" + seq + " result=" + result)
-                            }
-                        }, 800L)
-                    }
-                    // 认证页常年有长连接，onPageFinished 可能迟迟不来（甚至永远不来），
-                    // 所以从 onPageStarted 起就按时间点硬注入，不等加载"完成"。
-                    val acc = currentAccount
-                    val pwd = currentPassword
-                    if (acc.isBlank() || pwd.isBlank()) return
-                    val delays = longArrayOf(1500L, 3000L, 6000L, 10000L, 15000L)
+                    injectAll(view, currentAccount, currentPassword, seq * 100, "start#" + seq)
+                    val delays = longArrayOf(300L, 800L, 1500L, 3000L, 6000L)
                     delays.forEachIndexed { index, d ->
-                        val key = "start|" + seq + "#" + index
-                        if (!injected.add(key)) return@forEachIndexed
                         view.postDelayed({
-                            val token = 9000 + index
-                            EventLog.add("web", "注入脚本(按时间) token=" + token + " @" + d + "ms")
-                            view.evaluateJavascript(PortalAutofill.script(acc, pwd, token)) { result ->
-                                EventLog.add("js", "inject#" + token + " result=" + result)
-                            }
+                            injectAll(
+                                view,
+                                currentAccount,
+                                currentPassword,
+                                seq * 100 + index + 1,
+                                "start#" + seq + "@" + d + "ms"
+                            )
                         }, d)
                     }
                 }
@@ -159,37 +158,18 @@ fun PortalWebView(
                     currentOnUrl(url)
                     currentOnReady()
 
+                    // 加载完成也立即注入一次，然后再补几个时间点（DOM 可能还在变）
                     val seq = navSeq.get()
-                    // 再检查一次断网文案：这次是"加载完成"的时机，DOM 更完整
-                    if (injected.add("offF#" + seq)) {
-                        view.evaluateJavascript(PortalAutofill.offHoursScript()) { result ->
-                            EventLog.add("js", "offHoursF#" + seq + " result=" + result)
-                        }
-                    }
-
-                    // 成功文案可能晚于 onPageFinished 出现，这里先打一枪，之后由定时循环兜住
-                    view.evaluateJavascript(PortalAutofill.successScript(), null)
-
-                    val acc = currentAccount
-                    val pwd = currentPassword
-                    if (acc.isBlank() || pwd.isBlank()) {
-                        EventLog.add("web", "账密为空，跳过注入")
-                        return
-                    }
-                    // 不再限定域名：不同网关给出的页面地址不一样，
-                    // 由脚本自己判断页面上有没有登录表单。
-
-                    // Angular 渲染时机不确定，多打几个时间点
-                    val delays = longArrayOf(400L, 1500L, 4000L, 8000L)
-                    delays.forEachIndexed { index, d ->
-                        val key = "fin|" + seq + "#" + index
-                        if (!injected.add(key)) return@forEachIndexed
+                    injectAll(view, currentAccount, currentPassword, 60000 + seq, "finish#" + seq)
+                    longArrayOf(300L, 1000L, 3000L).forEachIndexed { index, d ->
                         view.postDelayed({
-                            val token = attempt * 100 + index
-                            EventLog.add("web", "注入脚本 token=" + token + " @" + d + "ms")
-                            view.evaluateJavascript(PortalAutofill.script(acc, pwd, token)) { result ->
-                                EventLog.add("js", "inject#" + token + " result=" + result)
-                            }
+                            injectAll(
+                                view,
+                                currentAccount,
+                                currentPassword,
+                                61000 + seq * 10 + index,
+                                "finish#" + seq + "@" + d + "ms"
+                            )
                         }, d)
                     }
                 }
@@ -210,27 +190,20 @@ fun PortalWebView(
         }
     }
 
-    LaunchedEffect(attempt) { injected.clear() }
+    LaunchedEffect(attempt) { EventLog.add("web", "新的一轮尝试 attempt=" + attempt) }
 
     LaunchedEffect(portalUrl) {
         if (portalUrl.isNotBlank()) {
             EventLog.add("web", "loadUrl " + portalUrl)
             webView.loadUrl(portalUrl)
-            // 页面开着就一直每 2 秒把三份脚本全部再注入一遍：
-            //   填表脚本（内部有 __xtuRunning/__xtuDone 守卫，重复注入是空操作）
-            //   断网文案检查、成功文案检查（同样有去重标记）。
-            // 认证页随时可能自己刷新/换 DOM，所以宁可反复打也不一次性打完。
+            // 页面开着就一直每 1.2 秒把全部脚本再注入一遍：任何时刻出现的页面
+            //（包括跳转后、SPA 换路由后新打开的页面）都会被填表。
+            // 脚本内部按 URL 重置守卫，所以换页会重新填，同页重复注入是空操作。
             var round = 0
             while (true) {
-                delay(2_000L)
+                delay(1_200L)
                 round++
-                val acc = currentAccount
-                val pwd = currentPassword
-                if (acc.isNotBlank() && pwd.isNotBlank()) {
-                    webView.evaluateJavascript(PortalAutofill.script(acc, pwd, 20_000 + round), null)
-                }
-                webView.evaluateJavascript(PortalAutofill.successScript(), null)
-                webView.evaluateJavascript(PortalAutofill.offHoursScript(), null)
+                injectAll(webView, currentAccount, currentPassword, 20_000 + round, "tick#" + round)
             }
         }
     }

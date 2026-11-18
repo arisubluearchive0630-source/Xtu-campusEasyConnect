@@ -174,9 +174,23 @@ object PortalAutofill {
     return;
   }
 
+  // 页内路由/整页跳转都可能换掉 DOM：URL 变了就重新武装守卫，
+  // 保证每个打开的页面都能重新走一遍填表。
+  try {
+    if (window.__xtuScriptUrl !== location.href) {
+      window.__xtuScriptUrl = location.href;
+      window.__xtuDone = false;
+      window.__xtuRunning = false;
+    }
+  } catch (e) {}
+  // 上一轮卡住（页面一直没出表单）也要能再来
+  if (window.__xtuRunning && (Date.now() - (window.__xtuRunStart || 0) > 45000)) {
+    window.__xtuRunning = false;
+  }
   if (window.__xtuDone) { report("inject", "skip#" + TOKEN + " done"); return; }
   if (window.__xtuRunning) { report("inject", "skip#" + TOKEN + " running"); return; }
   window.__xtuRunning = true;
+  window.__xtuRunStart = Date.now();
 
   var frames = document.querySelectorAll("iframe");
   var reachable = 0;
@@ -191,8 +205,10 @@ object PortalAutofill {
 
   function docs() {
     var list = [document];
-    for (var i = 0; i < frames.length; i++) {
-      try { var d = frames[i].contentDocument; if (d) list.push(d); } catch (e) {}
+    var live = [];
+    try { live = document.querySelectorAll("iframe"); } catch (e) {}
+    for (var i = 0; i < live.length; i++) {
+      try { var d = live[i].contentDocument; if (d) list.push(d); } catch (e) {}
     }
     return list;
   }
