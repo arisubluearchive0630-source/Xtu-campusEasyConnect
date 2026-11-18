@@ -4,7 +4,6 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.android_logininternet.data.SettingsRepository
-import com.example.android_logininternet.net.ConnectivityProbe
 import com.example.android_logininternet.util.EventLog
 import com.example.android_logininternet.wifi.WifiConnector
 import com.example.android_logininternet.wifi.WifiNetworks
@@ -33,8 +32,8 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
         /** 断网时段由页面自己说明（"不在认证时段内"），程序不按系统时间猜。 */
         const val OUT_OF_HOURS_TEXT = "不在认证时段内，凌晨断网你不知道的吗笨蛋！"
 
-        /** 认证通过后锐捷网关会把流量重定向到这里，可作为成功判据。 */
-        const val REDIRECT_SUCCESS_HOST = "123.123.123.123"
+        /** 认证页（"验证页面"）入口：进来就是要填表的地方。 */
+        const val AUTH_URL = "https://zz.xtu.edu.cn/portal/entry/pc/authenticate"
     }
 
     enum class Phase { Idle, ConnectingWifi, Probing, LoadingPortal, Filling, Verifying, Online, Failed }
@@ -93,14 +92,6 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
     /** 已经看到登录表单（说明页面是认证页，不是状态页）。 */
     @Volatile
     private var formSeen = false
-
-    /** 已经真的点过登录（填表这一步走完了）。 */
-    @Volatile
-    private var formAttempted = false
-
-    /** 所有候选入口都试过了，还是没见到表单。 */
-    @Volatile
-    private var candidatesExhausted = false
 
 
     /** 置 true 后 run() 里的各个循环立刻退出（停止、失败、重新启动都会置位）。 */
@@ -182,8 +173,6 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
         successSeen = false
         offHoursSeen = false
         formSeen = false
-        formAttempted = false
-        candidatesExhausted = false
         refreshNetwork()
         _state.update {
             it.copy(
@@ -218,23 +207,9 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(portalUrl = null, pageUrl = "") }
     }
 
-    /**
-     * WebView 的 URL 变化。
-     *
-     * 除了显示，还兼一个成功判据：认证完成后，锐捷网关会把流量重定向到
-     * http://123.123.123.123/ ，所以只要 WebView 跳到了这个地址，就认为已经通了。
-     * （finish 页不能当判据 —— 它本身就是我们的入口。）
-     */
+    /** WebView 的 URL 变化：只用来显示，不当任何成功判据。 */
     fun onPageUrl(url: String) {
         _state.update { it.copy(pageUrl = url) }
-        if (url.contains(REDIRECT_SUCCESS_HOST) && !successSeen && !aborted) {
-            if (!formAttempted && !candidatesExhausted) {
-                EventLog.add("vm", "页面跳到 " + REDIRECT_SUCCESS_HOST + "，但还没走完填表，先继续找表单")
-            } else {
-                EventLog.add("vm", "页面跳转到 " + REDIRECT_SUCCESS_HOST + "，判定已连网")
-                markOnline("认证成功（已跳转到 " + REDIRECT_SUCCESS_HOST + "）")
-            }
-        }
     }
 
     /** 注入脚本的回传。 */
@@ -252,14 +227,10 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
             }
             "agreementChecked", "agreementMissing" ->
                 _state.update { it.copy(message = "协议：" + detail) }
-            "submitted" -> {
-                formAttempted = true
+            "submitted" ->
                 _state.update { it.copy(phase = Phase.Verifying, message = "已点击登录，等待认证…") }
-            }
-            "submitFallback", "submitViaForm" -> {
-                formAttempted = true
+            "submitFallback", "submitViaForm" ->
                 _state.update { it.copy(phase = Phase.Verifying, message = "按钮不可用，已直接提交表单") }
-            }
             "pageAlert" -> _state.update { it.copy(message = "页面提示：" + detail) }
             "dialog" -> _state.update { it.copy(message = "页面弹窗：" + detail) }
             "dialogClick" -> _state.update { it.copy(message = "已点掉协议弹窗：" + detail) }
@@ -268,16 +239,8 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
                 EventLog.add("vm", "页面提示不在认证时段：" + detail)
                 fail(OUT_OF_HOURS_TEXT)
             }
-            // 认证页自己说了"您已成功连接网络"。但状态页本来就会写这句话，
-            // 所以没真正填过表、也没把候选入口试完时，先不当成成功。
-            "success" -> {
-                if (!formAttempted && !candidatesExhausted) {
-                    EventLog.add("vm", "页面已显示成功文案，但还没走完填表这一步，忽略：" + detail)
-                    _state.update { it.copy(message = "页面显示成功文案，继续尝试填表…") }
-                } else {
-                    markOnline("认证成功，已连接网络")
-                }
-            }
+            // 唯一判据：认证页面上出现"您已成功连接网络"。
+            "success" -> markOnline("认证成功，已连接网络")
             // 没找到表单就当"这次没什么可填的"，不判失败：可能已经认证过，只是没出成功文案
             "noForm" -> _state.update { it.copy(message = "页面上没有登录表单（" + detail + "）") }
             "pageError" -> fail("认证页打不开：" + detail, networkIssue = true)
@@ -374,43 +337,23 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(message = if (bound) "已切换到 Wi-Fi 通道（" + (st.ssid ?: "名称不可见") + "）" else "只用 Wi-Fi 连接")
         }
 
-        // 3. 一定要先落到"带登录表单的认证页"，再填表 —— 绝不直接开 finish 状态页。
-        //    入口优先级：网关拦截（会带上 flowSessionId 的认证页）→ 门户认证入口 → finish 页（最后的兜底）。
-        //    每换一个入口给 8 秒看有没有出表单，出了就停，没出才换下一个。
-        val entries = listOf(
-            ConnectivityProbe.PROBE_URL to "网关拦截",
-            ConnectivityProbe.PORTAL_ENTRY to "门户认证入口",
-            ConnectivityProbe.FINISH_URL to "状态页"
-        )
-        for ((url, name) in entries) {
-            if (aborted) return@withContext
-            EventLog.add("vm", "打开入口[" + name + "]：" + url)
+        // 3. 直接打开验证页面（认证页），不做任何联网探测/网关拦截、
+        //    不用 generate_204、也不用 123.123.123.123 当判据。
+        //    页面打开后由注入脚本填表、点登录，成功与否只看页面文字。
+        if (!aborted) {
+            EventLog.add("vm", "打开验证页面：" + AUTH_URL)
             _state.update {
                 it.copy(
-                    portalUrl = url,
+                    portalUrl = AUTH_URL,
                     phase = Phase.LoadingPortal,
-                    message = "正在打开认证页（" + name + "）…"
+                    message = "正在打开验证页面…"
                 )
             }
-            var waited = 0L
-            while (waited < 8_000L && !aborted && !formSeen) {
-                delay(250)
-                waited += 250
-            }
-            if (formSeen) {
-                EventLog.add("vm", "入口[" + name + "]出现登录表单，开始填表")
-                break
-            }
-            EventLog.add("vm", "入口[" + name + "]没出登录表单，试下一个")
-        }
-        if (!formSeen) {
-            candidatesExhausted = true
-            EventLog.add("vm", "所有入口都没出登录表单，只能看状态页怎么说了")
         }
 
-        // 4. 之后只是等：填表/提交由注入脚本自己完成，
-        //    "您已成功连接网络"与 123.123.123.123 这两个成功判据一直由注入脚本 + 原生回调盯着；
-        //    检测到就由 markOnline 收尾，检测不到就什么都不做（不判失败、不超时）。
+        // 4. 之后只是等：所有脚本（填表 / 断网提示 / 成功文案）由 WebView 反复注入，
+        //    页面出现"您已成功连接网络"就由 markOnline 收尾；
+        //    检测不到就什么都不做（不判失败、不超时）。
         while (!aborted) {
             delay(500)
         }

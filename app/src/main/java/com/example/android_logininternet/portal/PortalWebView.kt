@@ -140,7 +140,6 @@ fun PortalWebView(
                         val key = "start|" + seq + "#" + index
                         if (!injected.add(key)) return@forEachIndexed
                         view.postDelayed({
-                            if (view.url?.contains("/portal/entry/pc/finish") == true) return@postDelayed
                             val token = 9000 + index
                             EventLog.add("web", "注入脚本(按时间) token=" + token + " @" + d + "ms")
                             view.evaluateJavascript(PortalAutofill.script(acc, pwd, token)) { result ->
@@ -217,12 +216,21 @@ fun PortalWebView(
         if (portalUrl.isNotBlank()) {
             EventLog.add("web", "loadUrl " + portalUrl)
             webView.loadUrl(portalUrl)
-            // 认证页有时原地刷新、有时慢半拍才渲染出"您已成功连接网络"，
-            // 所以页面开着就一直每 2 秒补一次成功检查
-            //（脚本内部有去重标记，重复注入是空操作）。
+            // 页面开着就一直每 2 秒把三份脚本全部再注入一遍：
+            //   填表脚本（内部有 __xtuRunning/__xtuDone 守卫，重复注入是空操作）
+            //   断网文案检查、成功文案检查（同样有去重标记）。
+            // 认证页随时可能自己刷新/换 DOM，所以宁可反复打也不一次性打完。
+            var round = 0
             while (true) {
                 delay(2_000L)
+                round++
+                val acc = currentAccount
+                val pwd = currentPassword
+                if (acc.isNotBlank() && pwd.isNotBlank()) {
+                    webView.evaluateJavascript(PortalAutofill.script(acc, pwd, 20_000 + round), null)
+                }
                 webView.evaluateJavascript(PortalAutofill.successScript(), null)
+                webView.evaluateJavascript(PortalAutofill.offHoursScript(), null)
             }
         }
     }
