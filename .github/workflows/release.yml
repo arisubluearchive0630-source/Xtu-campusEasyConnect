@@ -1,7 +1,8 @@
 name: Release
 
 # 仅 main 分支被合并/推送时构建；产物是一个已签名的 release APK，发布为 **nightly 预发布**（prerelease，
-# 不抢占 Latest 标记）。只有真正定版时才手动把某个 nightly 改成正式 Release。
+# 不抢占 Latest 标记）。定版的正式 Release 由另一个工作流 release-stable.yml 手动触发产生
+#（同样的 CI 签名密钥，tag 形如 v0.19，并标记 Latest）。
 # 签名密钥 ci/xtu-ci-release.jks 是**CI 专用**密钥（公开在仓库里，仅用于让 APK 可安装、
 # 且跨版本签名稳定以便覆盖安装）。它不用于 Google Play 或任何正式分发。
 
