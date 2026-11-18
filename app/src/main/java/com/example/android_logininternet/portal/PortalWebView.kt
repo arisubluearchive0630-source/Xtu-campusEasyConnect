@@ -21,6 +21,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.android_logininternet.util.EventLog
+import kotlinx.coroutines.delay
 
 /** JS 里的 window.XtuBridge，把注入脚本的进度回传给 Kotlin。 */
 private class PortalJsBridge(private val onEvent: (String, String) -> Unit) {
@@ -117,8 +118,11 @@ fun PortalWebView(
                     if (url == null || view == null) return
                     EventLog.add("web", "onPageStarted " + url)
                     currentOnUrl(url)
-                    // 新导航：断网文案检查无条件注入，同 URL 刷新也算新导航
+                    // 新导航：断网文案 / 成功文案检查无条件注入，同 URL 刷新也算新导航
                     val seq = navSeq.incrementAndGet()
+                    view.postDelayed({
+                        view.evaluateJavascript(PortalAutofill.successScript(), null)
+                    }, 700L)
                     if (injected.add("off#" + seq)) {
                         view.postDelayed({
                             view.evaluateJavascript(PortalAutofill.offHoursScript()) { result ->
@@ -164,6 +168,9 @@ fun PortalWebView(
                             EventLog.add("js", "offHoursF#" + seq + " result=" + result)
                         }
                     }
+
+                    // 成功文案可能晚于 onPageFinished 出现，这里先打一枪，之后由定时循环兜住
+                    view.evaluateJavascript(PortalAutofill.successScript(), null)
 
                     if (url.contains("/portal/entry/pc/finish")) {
                         EventLog.add("web", "已到 finish 页")
@@ -215,6 +222,14 @@ fun PortalWebView(
         if (portalUrl.isNotBlank()) {
             EventLog.add("web", "loadUrl " + portalUrl)
             webView.loadUrl(portalUrl)
+            // 认证页有时原地刷新、有时慢半拍才渲染出"您已成功连接网络"，
+            // 所以整轮流程里每 2 秒补一次成功检查（脚本内部有去重标记，重复注入是空操作）。
+            var waited = 0L
+            while (waited < 180_000L) {
+                delay(2_000L)
+                waited += 2_000L
+                webView.evaluateJavascript(PortalAutofill.successScript(), null)
+            }
         }
     }
 

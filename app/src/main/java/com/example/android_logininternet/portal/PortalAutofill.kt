@@ -30,6 +30,17 @@ object PortalAutofill {
      */
     fun offHoursScript(): String = OFF_HOURS_SCRIPT
 
+    /**
+     * 只做"登录成功文案检查"的轻量脚本。
+     *
+     * 认证页跳转/重渲染都要时间，成功文案往往比 URL 变化晚出现，
+     * 所以这个脚本由 WebView 定时反复注入（脚本内部有去重标记，重复注入无副作用）。
+     */
+    fun successScript(): String = SUCCESS_SCRIPT
+
+    /** 认证成功页上的标志性文案。 */
+    const val SUCCESS_MARK = "您已成功连接网络"
+
     private fun escape(raw: String): String {
         val sb = StringBuilder(raw.length + 8)
         for (c in raw) {
@@ -79,6 +90,48 @@ object PortalAutofill {
   var timer = setInterval(function () {
     n++;
     if (check() || n >= 40) { clearInterval(timer); }
+  }, 500);
+})();
+""";
+
+    private const val SUCCESS_SCRIPT = """
+(function () {
+  var MARK = "您已成功连接网络";
+  if (window.__xtuSuccFound) return;
+
+  function docs() {
+    var list = [document];
+    try {
+      var fs = document.querySelectorAll("iframe");
+      for (var i = 0; i < fs.length; i++) {
+        try { var d = fs[i].contentDocument; if (d) list.push(d); } catch (e) {}
+      }
+    } catch (e) {}
+    return list;
+  }
+
+  function check() {
+    var ds = docs();
+    for (var i = 0; i < ds.length; i++) {
+      var t = ((ds[i].body && ds[i].body.innerText) || "").replace(/\s+/g, " ").trim();
+      if (t.indexOf(MARK) >= 0) {
+        window.__xtuSuccFound = true;
+        try {
+          if (window.XtuBridge) { window.XtuBridge.report("success", t.slice(0, 120)); }
+        } catch (e) {}
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (check()) return;
+  if (window.__xtuSuccTimer) return;  // 已经有一个轮询在跑，不必再开
+  var n = 0;
+  window.__xtuSuccTimer = setInterval(function () {
+    n++;
+    var hit = check();
+    if (hit || n >= 240) { clearInterval(window.__xtuSuccTimer); window.__xtuSuccTimer = null; }
   }, 500);
 })();
 """;

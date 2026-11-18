@@ -83,6 +83,15 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile
     private var offHoursSeen = false
 
+    /**
+     * 探测时 Wi-Fi 已经能通外网。
+     *
+     * 蜂窝网络常开时探测永远被打到蜂窝上，这个值只能说明"当下能上网"，
+     * 不能说明校园网已经认证过 —— 所以流程照走，只是兜底文案不同。
+     */
+    @Volatile
+    private var wasOnline = false
+
     /** 置 true 后 run() 里的各个循环立刻退出（停止、失败、重新启动都会置位）。 */
     @Volatile
     private var aborted = false
@@ -161,6 +170,7 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
         }
         finishSeen = false
         offHoursSeen = false
+        wasOnline = false
         refreshNetwork()
         _state.update {
             it.copy(
@@ -221,7 +231,13 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
                 EventLog.add("vm", "页面提示不在认证时段：" + detail)
                 fail(OUT_OF_HOURS_TEXT)
             }
-            "noForm" -> fail("没找到登录表单（" + detail + "）")
+            // 认证页自己说了"您已成功连接网络"，这是最可靠的信号
+            "success" -> markOnline("认证成功，已连接网络")
+            "noForm" -> {
+                // 探测时本来就能上网、页面上又没有登录表单：说明这个 Wi-Fi 已经是通的
+                if (wasOnline) markOnline("这个 Wi-Fi 已经能上网，无需再认证")
+                else fail("没找到登录表单（" + detail + "）")
+            }
             "pageError" -> fail("认证页打不开：" + detail, networkIssue = true)
             "renderGone" -> fail("WebView 渲染进程崩溃，点重试")
         }
@@ -240,6 +256,18 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
         timerJob?.cancel()
         WifiNetworks.unbind(getApplication())
         _state.update { it.copy(phase = Phase.Failed, message = shown) }
+    }
+
+    /** 失败的相反面：认证页给出成功标志（成功文案或 finish 页）。 */
+    private fun markOnline(message: String) {
+        val cur = state.value.phase
+        // 用户已经停止/已经判定在线时，页面迟到的成功文案不该再改状态
+        if (cur == Phase.Idle || cur == Phase.Online) return
+        aborted = true
+        timerJob?.cancel()
+        WifiNetworks.unbind(getApplication())
+        EventLog.add("vm", "判定成功：" + message)
+        _state.update { it.copy(phase = Phase.Online, message = message) }
     }
 
     private fun startTimer() {
@@ -304,14 +332,15 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
         // 3. 找认证页入口（只做发现，不当作是否联网的判据）
         _state.update { it.copy(phase = Phase.Probing, message = "正在找认证页…") }
         var portal: String? = null
-        var alreadyOnline = false
         loop@ for (i in 0 until 3) {
             if (aborted) return@withContext
             val r = ConnectivityProbe.probe(wifiNet)
             EventLog.add("vm", "probe#" + i + " -> " + r)
             when (r) {
                 is ConnectivityProbe.Result.Online -> {
-                    alreadyOnline = true
+                    // 蜂窝常开时探测会打到蜂窝上、永远返回 204，
+                    // 所以这里只记一笔，绝不因此跳过认证流程。
+                    wasOnline = true
                     break@loop
                 }
                 is ConnectivityProbe.Result.Portal -> {
@@ -333,13 +362,6 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         if (portal == null) {
-            if (alreadyOnline) {
-                WifiNetworks.unbind(app)
-                timerJob?.cancel()
-                EventLog.add("vm", "已经在线，不认证")
-                _state.update { it.copy(phase = Phase.Online, message = "这个 Wi-Fi 已经能上网，不用认证") }
-                return@withContext
-            }
             if (st.campus || st.ssid == null) {
                 // 探测不到跳转页时，让 WebView 自己发一个 generate_204，由网关跳转过去。
                 // 直接打开 /portal/entry/pc/authenticate 会缺 flowSessionId，页面是空的。
@@ -354,18 +376,20 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
 
         // 4. 交给 WebView 填充
         _state.update {
-            it.copy(portalUrl = portal, phase = Phase.LoadingPortal, message = "正在打开认证页…")
+            it.copy(
+                portalUrl = portal,
+                phase = Phase.LoadingPortal,
+                message = if (wasOnline) "当前 Wi-Fi 已能上网，仍打开认证页确认…" else "正在打开认证页…"
+            )
         }
 
-        // 5. 等认证页走到 finish（不联网探测）
+        // 5. 等认证页给出成功标志：URL 到 finish 页，或页面文本出现"您已成功连接网络"
+        //    （文本判定在注入脚本里做，成功后由 onBridgeEvent 收尾）
         val deadline = System.currentTimeMillis() + 120_000
         while (System.currentTimeMillis() < deadline && !aborted) {
             delay(500)
             if (finishSeen) {
-                WifiNetworks.unbind(app)
-                timerJob?.cancel()
-                EventLog.add("vm", "看到 finish 页，判定成功")
-                _state.update { it.copy(phase = Phase.Online, message = "登录成功，已联网") }
+                markOnline("登录成功，已联网")
                 return@withContext
             }
         }
